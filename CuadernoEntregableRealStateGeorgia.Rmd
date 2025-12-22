@@ -1,0 +1,816 @@
+```{r}
+
+#Leyre Azcona 
+#Sílvia Cusidó
+#Ilias Allali Ben Haman
+#Fernando Lafuente 
+
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 1 — INICIO “LÍDIA”: LIMPIAR + LIBRERÍAS + CARGA + SUBSET AÑO
+# Objetivo metodológico (Lídia / Sílvia):
+#  - Empezar con entorno limpio
+#  - Cargar librerías de diagnóstico/modelado
+#  - Leer el dataset RAW (sin limpiar aún)
+#  - Inspección inicial
+#  - Filtrar año 2021
+#  - Comprobar equivalencia datePostedString vs datePosted
+#  - Definir working set final eliminando redundancias
+# ═════════════════════════════════════════════════════════════════════
+
+rm(list = ls())
+# Limpieza total del entorno para evitar contaminación entre sesiones.
+
+library(car)
+library(effects)
+library(FactoMineR)
+library(lmtest)
+# Librerías estándar del curso para diagnóstico, EDA y validación.
+
+# 1) CARGA DEL DATASET RAW ---------------------------------------------
+
+df0 <- read.csv("RealEstate_Georgia.csv",
+                header = TRUE,
+                stringsAsFactors = FALSE)
+# Se carga el dataset original sin modificar tipos automáticamente.
+
+# 2) INSPECCIÓN GLOBAL INICIAL -----------------------------------------
+
+summary(df0)
+# Primera inspección para detectar rangos incoherentes, NA y variables problemáticas.
+
+# 3) CONVERSIÓN DE FECHA Y FILTRADO TEMPORAL ---------------------------
+
+df0$datePosted <- as.Date(df0$datePostedString)
+# Conversión explícita de la fecha desde string a clase Date.
+
+# Comprobación de parsing correcto:
+sum(is.na(df0$datePosted))
+# Si este valor es > 0, el formato de fecha NO es consistente.
+
+# Índices correspondientes al año 2021
+ll <- which(df0$datePosted >= as.Date("2021-01-01") &
+            df0$datePosted <= as.Date("2021-12-31"))
+
+length(ll)
+# Tamaño muestral tras el filtrado temporal.
+
+# 4) COMPARACIÓN datePostedString vs datePosted ------------------------
+
+# Comprobamos si datePostedString contiene información adicional
+# más allá de la fecha (hora, formato distinto, etc.)
+unique_pairs <- unique(
+  data.frame(
+    datePostedString = df0$datePostedString[ll],
+    datePosted       = df0$datePosted[ll]
+  )
+)
+
+nrow(unique_pairs)
+# Si cada datePosted corresponde a un único datePostedString,
+# entonces la variable string no aporta información adicional.
+
+# En caso ideal: nrow(unique_pairs) == length(unique(df0$datePosted[ll]))
+
+# 5) DEFINICIÓN DEL WORKING SET ----------------------------------------
+# datePostedString se elimina por redundancia tras comprobación explícita.
+# datePosted se mantiene como variable temporal limpia.
+
+vars <- c(
+  "datePosted",
+  "event", "time",
+  "price",
+  "pricePerSquareFoot",
+  "city", "county",
+  "yearBuilt",
+  "buildingArea",
+  "bathrooms", "bedrooms",
+  "levels", "homeType",
+  "zipcode", "longitude", "latitude",
+  "is_bankOwned", "is_forAuction",
+  "parking", "garageSpaces", "hasGarage",
+  "pool", "spa", "isNewConstruction", "hasPetsAllowed"
+)
+
+vars <- intersect(vars, names(df0))
+# Robustez: solo selecciona columnas existentes.
+
+df <- df0[ll, vars]
+# Creación del working set definitivo para EDA y modelización.
+
+# 6) CONTROL BÁSICO ----------------------------------------------------
+
+dim(df)
+summary(df)
+# Dimensiones y resumen del working set final.
+# A partir de aquí comienza limpieza, tipología y EDA.
+
+
+```
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 2 — PREPARACIÓN DEL DATASET: TIPOS DE VARIABLES Y CHECKS BÁSICOS
+# Objetivo metodológico (Lídia / Sílvia):
+#  - Definir explícitamente la tipología de las variables
+#  - Separar numéricas, categóricas y temporales
+#  - Detectar problemas estructurales evidentes
+#  - NO modificar aún los datos (sin limpieza)
+# ═════════════════════════════════════════════════════════════════════
+
+# Guardamos una copia del working set antes de cambios posteriores
+df_ws <- df
+# Permite trazabilidad y volver atrás si fuese necesario.
+
+# 1) IDENTIFICACIÓN DE VARIABLES CATEGÓRICAS ---------------------------
+
+factor_vars <- intersect(
+  c(
+    "event",
+    "city",
+    "county",
+    "zipcode",
+    "levels",
+    "homeType",
+    "is_bankOwned",
+    "is_forAuction",
+    "parking",
+    "hasGarage",
+    "pool",
+    "spa",
+    "isNewConstruction",
+    "hasPetsAllowed"
+  ),
+  names(df)
+)
+# Selección explícita de variables conceptualmente categóricas.
+# Aunque algunas estén codificadas como 0/1, no deben tratarse como numéricas.
+
+# 2) CONVERSIÓN A FACTOR -----------------------------------------------
+
+df[factor_vars] <- lapply(df[factor_vars], as.factor)
+# Tipificación explícita: R no debe inferir tipos automáticamente.
+# Paso clave en la metodología de Lídia.
+
+# 3) VARIABLES TEMPORALES ----------------------------------------------
+
+time_vars <- intersect(c("datePosted", "time"), names(df))
+# Identificamos variables temporales (Date / timestamp).
+
+# 4) IDENTIFICACIÓN DE VARIABLES NUMÉRICAS -----------------------------
+
+numeric_vars <- setdiff(names(df), c(factor_vars, time_vars))
+# Todo lo que no es factor ni fecha se considera numérico en esta etapa.
+
+# 5) CHECKS ESTRUCTURALES BÁSICOS --------------------------------------
+
+# Número de niveles por variable categórica
+n_levels <- sapply(df[factor_vars], function(x) length(levels(x)))
+n_levels
+# Detecta factores constantes o con demasiados niveles (p.ej. zipcode, city).
+
+# Número de valores NA por variable numérica
+na_numeric <- sapply(df[numeric_vars], function(x) sum(is.na(x)))
+na_numeric
+# Diagnóstico preliminar de missing values (sin tratarlos aún).
+
+# Resumen rápido de variables numéricas
+summary(df[numeric_vars])
+# Permite detectar rangos imposibles o valores sospechosos
+# (yearBuilt = 9999, bathrooms = 0, etc.).
+
+# 6) ESTRUCTURA GLOBAL DEL DATASET -------------------------------------
+
+str(df)
+# Confirmación final de tipos:
+# - factores bien definidos
+# - numéricas correctamente identificadas
+# - fechas en formato Date
+
+cat("\nCelda 2 ejecutada. Tipología y diagnóstico estructural completados.\n")
+
+```
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 3 — ELIMINAR DUPLICADOS: QUEDARSE CON EL "ÚLTIMO ANUNCIO" (time máximo)
+# Objetivo metodológico (Lídia):
+#  - Eliminar duplicados / reposts con una regla explícita y reproducible
+#  - Si una misma propiedad aparece varias veces con precios distintos,
+#    conservar el anuncio más reciente (time mayor)
+#  - Medir el impacto: cuántas filas se eliminan
+# ═════════════════════════════════════════════════════════════════════
+
+# 1) DEFINIMOS UNA CLAVE APROXIMADA DE "MISMA PROPIEDAD" ----------------
+# Nota: no existe una clave perfecta sin un ID fiable; usamos una combinación
+# de localización + características estructurales para colapsar reposts.
+key <- paste(
+  df$zipcode,
+  df$city,
+  df$buildingArea,
+  df$bedrooms,
+  df$bathrooms,
+  df$yearBuilt,
+  sep = " | "
+)
+
+# 2) ANTES: filas y claves únicas --------------------------------------
+n_before <- nrow(df)
+n_key_before <- length(unique(key))
+
+cat("Antes: filas =", n_before, " | claves únicas =", n_key_before, "\n")
+
+# 3) ORDENAMOS POR key y time (ascendente) -----------------------------
+# Para quedarnos con el anuncio más reciente, ordenamos por time y luego
+# conservamos el último registro dentro de cada clave.
+oo <- order(key, df$time)
+
+df_ord  <- df[oo, ]
+key_ord <- key[oo]
+
+# 4) CONSERVAR EL ÚLTIMO POR CLAVE (time máximo) -----------------------
+# duplicated(..., fromLast=TRUE) marca como duplicadas todas menos la última.
+keep <- !duplicated(key_ord, fromLast = TRUE)
+
+df2 <- df_ord[keep, ]
+
+# 5) DESPUÉS: comprobaciones -------------------------------------------
+n_after <- nrow(df2)
+
+cat("Después: filas =", n_after, "\n")
+cat("Filas eliminadas por colapso =", n_before - n_after, "\n")
+
+# Sanity check: ahora cada clave debe aparecer una única vez
+key2 <- paste(
+  df2$zipcode,
+  df2$city,
+  df2$buildingArea,
+  df2$bedrooms,
+  df2$bathrooms,
+  df2$yearBuilt,
+  sep = " | "
+)
+
+cat("Claves repetidas tras colapso (debería ser 0):",
+    sum(duplicated(key2)), "\n")
+
+# 6) ACTUALIZAR WORKING SET Y LIMPIAR OBJETOS AUXILIARES ---------------
+df <- df2
+
+rm(df2, df_ord, key_ord, keep, oo, key, key2,
+   n_before, n_after, n_key_before)
+
+cat("\nCelda 3 ejecutada. Working set actualizado (df) con último anuncio por clave.\n")
+
+```
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 4 — INCOHERENCIAS: CORREGIR VALORES IMPOSIBLES / NO VÁLIDOS
+# Lógica Lídia / Sílvia:
+#  - Valores estructuralmente imposibles → corregir o marcar como NA
+#  - Casos “no habitables / error claro” (bathrooms == 0) → eliminar fila
+#  - Medir impacto de cada regla
+#  - Crear una nueva versión del dataset tras esta etapa
+# ═════════════════════════════════════════════════════════════════════
+
+df_before <- df
+n_before  <- nrow(df)
+
+cat("Filas antes (entrada celda 4):", n_before, "\n")
+
+# 1) ELIMINAR FILAS CON bathrooms == 0 ---------------------------------
+n_bath0 <- sum(df$bathrooms == 0, na.rm = TRUE)
+cat("Filas con bathrooms == 0:", n_bath0, "\n")
+
+df4 <- df[df$bathrooms != 0, ]
+# Eliminación explícita: bathrooms==0 se considera incoherencia no imputable
+
+cat("Filas tras eliminar bathrooms==0:", nrow(df4), "\n\n")
+
+# 2) CORRECCIONES → NA (NO eliminamos filas) ---------------------------
+
+# 2.1 Bedrooms <= 0 -> NA
+n_bad_bed <- sum(!is.na(df4$bedrooms) & df4$bedrooms <= 0)
+df4$bedrooms[df4$bedrooms <= 0] <- NA
+cat("Bedrooms <= 0 -> NA:", n_bad_bed, "\n")
+
+# 2.2 YearBuilt > 2021 -> NA
+n_bad_year <- sum(!is.na(df4$yearBuilt) & df4$yearBuilt > 2021)
+df4$yearBuilt[df4$yearBuilt > 2021] <- NA
+cat("YearBuilt > 2021 -> NA:", n_bad_year, "\n")
+
+# 2.3 BuildingArea <= 0 -> NA
+n_bad_area <- sum(!is.na(df4$buildingArea) & df4$buildingArea <= 0)
+df4$buildingArea[df4$buildingArea <= 0] <- NA
+cat("BuildingArea <= 0 -> NA:", n_bad_area, "\n")
+
+# 2.4 Price <= 0 -> NA (por coherencia)
+n_bad_price <- sum(!is.na(df4$price) & df4$price <= 0)
+df4$price[df4$price <= 0] <- NA
+cat("Price <= 0 -> NA:", n_bad_price, "\n")
+
+# 2.5 PricePerSquareFoot <= 0 -> NA (si existe en df)
+if ("pricePerSquareFoot" %in% names(df4)) {
+  n_bad_ppsf <- sum(!is.na(df4$pricePerSquareFoot) & df4$pricePerSquareFoot <= 0)
+  df4$pricePerSquareFoot[df4$pricePerSquareFoot <= 0] <- NA
+  cat("PricePerSquareFoot <= 0 -> NA:", n_bad_ppsf, "\n")
+}
+
+# 3) RESUMEN DE IMPACTO ------------------------------------------------
+n_after <- nrow(df4)
+
+cat("\nResumen impacto celda 4:\n")
+cat("Filas antes:", n_before, "\n")
+cat("Filas después:", n_after, "\n")
+cat("Filas eliminadas:", n_before - n_after, "\n\n")
+
+# 4) CHECKS RÁPIDOS ----------------------------------------------------
+cat("Check bathrooms==0 (debería ser 0):",
+    sum(df4$bathrooms == 0, na.rm = TRUE), "\n")
+
+summary(df4)
+
+# 5) ACTUALIZAR WORKING SET --------------------------------------------
+df <- df4
+rm(df4)
+
+cat("\nCelda 4 ejecutada. Dataset actualizado tras incoherencias.\n")
+
+```
+
+
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 5 — MISSING VALUES (NA): CUANTIFICAR, DIAGNOSTICAR Y DECIDIR
+# Lógica Lídia (algoritmo):
+#  - Contar NA por variable y por fila (n y %)
+#  - Identificar variables/filas que "no aportan valor" por exceso de NA
+#  - Justificar cualquier eliminación
+#  - (Opcional si se vio en clase) Little’s MCAR test
+#  - Crear un nuevo dataset tras este paso: df5
+# ═════════════════════════════════════════════════════════════════════
+
+Comprobar consistencia NA:  na Na nA  
+
+
+
+
+
+*Celda 6–7 (Outliers)
+
+outliers uni y multi
+
+calculas NA por variable y por fila
+
+decisiones de mantener / NA / eliminar
+
+haces tablas y %
+
+*Celda 8 (ya cerca del modelo)
+
+ahí sí aplicas “limpieza final”:
+quitar filas “inútiles” por NA masivo si aún existen
+
+
+
+
+
+df_before_missing <- df
+n_before <- nrow(df)
+
+cat("Filas antes (entrada celda 5):", n_before, "\n")
+
+# 1) NA POR VARIABLE ----------------------------------------------------
+
+na_var_n <- sapply(df, function(x) sum(is.na(x)))
+na_var_pct <- round(100 * na_var_n / nrow(df), 2)
+
+na_table <- data.frame(
+  variable = names(na_var_n),
+  na_n     = as.integer(na_var_n),
+  na_pct  = as.numeric(na_var_pct)
+)
+
+# Ordenamos de mayor a menor % de NA para ver rápidamente las peores
+na_table <- na_table[order(-na_table$na_pct), ]
+
+print(na_table)
+cat("\nVariables con NA > 0:\n")
+print(na_table[na_table$na_n > 0, ])
+
+# 2) NA POR FILA --------------------------------------------------------
+
+na_row_n <- apply(df, 1, function(x) sum(is.na(x)))
+na_row_pct <- round(100 * na_row_n / ncol(df), 2)
+
+cat("\nResumen NA por fila (n):\n")
+print(summary(na_row_n))
+
+cat("\nResumen NA por fila (%):\n")
+print(summary(na_row_pct))
+
+# Identificamos filas con muchos NA (para revisar si aportan valor)
+# (umbral defendible: > 50% de variables en NA)
+row_na_threshold_pct <- 50
+bad_rows <- which(na_row_pct > row_na_threshold_pct)
+
+cat("\nFilas con > ", row_na_threshold_pct, "% de NA:", length(bad_rows), "\n")
+
+# 3) DECISIÓN: ELIMINACIÓN JUSTIFICADA (CONSERVADORA) -------------------
+# Lídia: no se eliminan cosas "porque sí"; se explicita umbral y se mide impacto.
+
+# (A) Eliminar filas con NA en el target (price), porque no se pueden usar
+#     en modelización (esto es estándar y defendible).
+n_price_na <- sum(is.na(df$price))
+cat("Filas con price NA:", n_price_na, "\n")
+
+# (B) Eliminar filas con demasiados NA (si existen) según umbral anterior.
+#     Esto NO es imputación: es eliminar filas que no aportan información.
+#     Si prefieres no eliminar todavía, deja este bloque comentado.
+df5 <- df
+
+# Eliminar NA en target
+df5 <- df5[!is.na(df5$price), ]
+
+# Eliminar filas con NA masivo (recalcular sobre df5 para ser coherente)
+na_row_pct_5 <- round(100 * apply(df5, 1, function(x) sum(is.na(x))) / ncol(df5), 2)
+df5 <- df5[na_row_pct_5 <= row_na_threshold_pct, ]
+
+cat("\nFilas tras eliminar price NA y filas con > ", row_na_threshold_pct, "% NA:", nrow(df5), "\n")
+cat("Filas eliminadas en celda 5:", n_before - nrow(df5), "\n")
+
+# (C) Variables con NA masivo (marcar para posible eliminación)
+# Umbral típico en la práctica del curso: > 40% NA (ajustable).
+var_na_threshold_pct <- 40
+vars_high_na <- na_table$variable[na_table$na_pct > var_na_threshold_pct]
+
+cat("\nVariables con > ", var_na_threshold_pct, "% NA (revisar/eliminar si no aportan):\n")
+print(vars_high_na)
+
+# Nota Lídia: no borres automáticamente sin justificar.
+# Aquí solo las listamos. Si decides eliminarlas, hazlo en un bloque explícito.
+
+# 4) LITTLE'S MCAR TEST (OPCIONAL, SI DISPONIBLE) ----------------------
+# En clase se menciona Little’s MCAR test para evaluar si los missing son MCAR.
+# Lo ejecutamos solo si está disponible el paquete correspondiente.
+# (Si no está, no pasa nada: se documenta y se sigue.)
+
+if (requireNamespace("BaylorEdPsych", quietly = TRUE)) {
+  cat("\nLittle's MCAR test (BaylorEdPsych::LittleMCAR) sobre variables numéricas:\n")
+  num_df5 <- df5[sapply(df5, is.numeric)]
+  # Si hay columnas numéricas con varianza 0 o todo NA, conviene excluirlas:
+  num_df5 <- num_df5[, sapply(num_df5, function(x) sum(!is.na(x)) > 0), drop = FALSE]
+  print(BaylorEdPsych::LittleMCAR(num_df5))
+} else {
+  cat("\nLittle's MCAR test no ejecutado: paquete 'BaylorEdPsych' no disponible.\n")
+}
+
+# 5) ACTUALIZAR WORKING SET --------------------------------------------
+df <- df5
+rm(df5, df_before_missing, na_var_n, na_var_pct, na_table, na_row_n, na_row_pct, na_row_pct_5,
+   bad_rows, n_before, n_price_na, vars_high_na)
+
+cat("\nCelda 5 ejecutada. Working set actualizado (df) tras análisis/tratamiento de missing.\n")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 4 — ELIMINACIÓN DE VARIABLES SIN VALOR ANALÍTICO
+# Estilo Lídia: quitar lo que no explica ANTES de limpiar filas
+# ═════════════════════════════════════════════════════════════════════
+
+# 1) INVENTARIO DE VARIABLES -------------------------------------------
+names(df)
+
+# 2) IDENTIFICAMOS VARIABLES A ELIMINAR ---------------------------------
+# Criterios Lídia:
+# - texto libre no modelizable
+# - variables constantes
+# - variables puramente administrativas
+# - duplicados conceptuales
+
+vars_drop <- c(
+  "datePostedString",   # versión texto de la fecha (ya tenemos datePosted)
+  "time"                # timestamp técnico (ya se usó para colapsar)
+)
+
+# Eliminamos solo las que existan
+vars_drop <- intersect(vars_drop, names(df))
+
+# 3) ELIMINAMOS ---------------------------------------------------------
+df <- df[ , !(names(df) %in% vars_drop) ]
+
+# 4) COMPROBACIONES -----------------------------------------------------
+cat("Variables eliminadas:\n")
+print(vars_drop)
+
+cat("\nDimensiones tras eliminar columnas:", dim(df), "\n")
+
+# 5) SUMMARY DE CONTROL -------------------------------------------------
+summary(df)
+
+cat("\nCelda 4 ejecutada. Variables no analíticas eliminadas.\n")
+
+```
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 5 — CORRECCIÓN DE DATOS INCONGRUENTES (VALORES IMPOSIBLES)
+# Estilo Lídia: contar -> corregir -> comprobar NA creados
+# ═════════════════════════════════════════════════════════════════════
+
+# 1) BATHROOMS = 0 (incongruente) ---------------------------------------
+# Regla del ejercicio: una vivienda no puede tener 0 baños
+nb0 <- sum(df$bathrooms == 0, na.rm = TRUE)
+cat("N filas con bathrooms == 0:", nb0, "\n")
+
+# Convertimos esos 0 a NA (NO eliminamos filas)
+df$bathrooms[df$bathrooms == 0] <- NA
+
+
+# 2) YEARBUILT absurdo --------------------------------------------------
+# Regla: no puede ser futuro respecto a 2021 (y 9999 es claramente absurdo)
+ny_future <- sum(df$yearBuilt > 2021, na.rm = TRUE)
+cat("N filas con yearBuilt > 2021:", ny_future, "\n")
+
+df$yearBuilt[df$yearBuilt > 2021] <- NA
+
+
+# 3) AREAS (livingArea/buildingArea) <= 0 -------------------------------
+# Regla: superficies deben ser positivas
+n_liv_bad <- sum(df$livingArea <= 0, na.rm = TRUE)
+n_bui_bad <- sum(df$buildingArea <= 0, na.rm = TRUE)
+
+cat("N filas con livingArea <= 0:", n_liv_bad, "\n")
+cat("N filas con buildingArea <= 0:", n_bui_bad, "\n")
+
+df$livingArea[df$livingArea <= 0] <- NA
+df$buildingArea[df$buildingArea <= 0] <- NA
+
+
+# 4) PRICE <= 0 ---------------------------------------------------------
+# Regla: el precio debe ser positivo
+n_price_bad <- sum(df$price <= 0, na.rm = TRUE)
+cat("N filas con price <= 0:", n_price_bad, "\n")
+
+df$price[df$price <= 0] <- NA
+
+
+# 5) RESUMEN DE NA (impacto de correcciones) ----------------------------
+na_counts <- sapply(df, function(x) sum(is.na(x)))
+cat("\nTop NA por variable (de mayor a menor):\n")
+print(sort(na_counts, decreasing = TRUE)[1:10])
+
+cat("\nCelda 5 ejecutada. Incongruencias marcadas como NA.\n")
+
+```
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 6 — DESCRIPTIVA UNIVARIANTE NUMÉRICA (FIVE-NUMBER SUMMARY)
+# Estilo Lídia: mirar números antes de hablar de outliers o transformar
+# ═════════════════════════════════════════════════════════════════════
+
+# 1) IDENTIFICAR VARIABLES NUMÉRICAS ------------------------------------
+# (integer o numeric)
+is_num <- sapply(df, function(x) is.numeric(x) || is.integer(x))
+num_vars <- names(df)[is_num]
+
+cat("Variables numéricas:\n")
+print(num_vars)
+
+# 2) CONSTRUIR TABLA DE RESUMEN -----------------------------------------
+num_summary <- data.frame(
+  variable = num_vars,
+  n_total  = NA_integer_,
+  n_na     = NA_integer_,
+  min      = NA_real_,
+  q1       = NA_real_,
+  median   = NA_real_,
+  mean     = NA_real_,
+  q3       = NA_real_,
+  max      = NA_real_,
+  row.names = NULL
+)
+
+for (i in seq_along(num_vars)) {
+
+  v <- num_vars[i]
+  x <- df[[v]]
+
+  # conteos
+  num_summary$n_total[i] <- length(x)
+  num_summary$n_na[i]    <- sum(is.na(x))
+
+  # si todos NA, saltamos
+  if (all(is.na(x))) next
+
+  # estadísticos
+  num_summary$min[i]    <- min(x, na.rm = TRUE)
+  num_summary$q1[i]     <- as.numeric(quantile(x, 0.25, na.rm = TRUE))
+  num_summary$median[i] <- median(x, na.rm = TRUE)
+  num_summary$mean[i]   <- mean(x, na.rm = TRUE)
+  num_summary$q3[i]     <- as.numeric(quantile(x, 0.75, na.rm = TRUE))
+  num_summary$max[i]    <- max(x, na.rm = TRUE)
+}
+
+cat("\nDescriptiva univariante numérica:\n")
+print(num_summary)
+
+cat("\nCelda 6 ejecutada. Descriptiva numérica completada.\n")
+
+```
+
+```{r}
+# Mostrar la tabla completa en consola
+num_summary
+
+```
+
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 7 — DETECCIÓN DE OUTLIERS UNIVARIANTES (REGLA IQR)
+# Estilo Lídia: calcular umbrales, contar outliers y NO eliminar todavía
+# ═════════════════════════════════════════════════════════════════════
+
+# 1) Seleccionamos variables CONTINUAS para outliers --------------------
+# (excluimos binarias 0/1 y zipcode por ser código, no magnitud continua)
+vars_iqr <- c("price", "livingArea", "buildingArea", "bathrooms", "bedrooms", "yearBuilt",
+              "longitude", "latitude")
+
+vars_iqr <- intersect(vars_iqr, names(df))
+
+cat("Variables a analizar con IQR:\n")
+print(vars_iqr)
+
+# 2) Función IQR: umbrales y conteo ------------------------------------
+iqr_outlier_summary <- data.frame(
+  variable = vars_iqr,
+  n_total  = NA_integer_,
+  n_na     = NA_integer_,
+  q1       = NA_real_,
+  q3       = NA_real_,
+  iqr      = NA_real_,
+  low      = NA_real_,
+  high     = NA_real_,
+  n_out    = NA_integer_,
+  pct_out  = NA_real_,
+  row.names = NULL
+)
+
+for (i in seq_along(vars_iqr)) {
+
+  v <- vars_iqr[i]
+  x <- df[[v]]
+
+  iqr_outlier_summary$n_total[i] <- length(x)
+  iqr_outlier_summary$n_na[i]    <- sum(is.na(x))
+
+  # si todo NA, saltamos
+  if (all(is.na(x))) next
+
+  q1 <- as.numeric(quantile(x, 0.25, na.rm = TRUE))
+  q3 <- as.numeric(quantile(x, 0.75, na.rm = TRUE))
+  I  <- q3 - q1
+
+  low  <- q1 - 1.5 * I
+  high <- q3 + 1.5 * I
+
+  out <- (x < low | x > high) & !is.na(x)
+
+  iqr_outlier_summary$q1[i]  <- q1
+  iqr_outlier_summary$q3[i]  <- q3
+  iqr_outlier_summary$iqr[i] <- I
+  iqr_outlier_summary$low[i] <- low
+  iqr_outlier_summary$high[i] <- high
+  iqr_outlier_summary$n_out[i] <- sum(out)
+  iqr_outlier_summary$pct_out[i] <- round(100 * sum(out) / sum(!is.na(x)), 3)
+}
+
+cat("\nResumen de outliers (IQR):\n")
+print(iqr_outlier_summary)
+
+# 3) Identificar variables con % outliers alta --------------------------
+# (solo diagnóstico)
+cat("\nVariables ordenadas por % de outliers:\n")
+print(iqr_outlier_summary[order(-iqr_outlier_summary$pct_out), c("variable","n_out","pct_out")])
+
+cat("\nCelda 7 ejecutada. Outliers detectados (no se han eliminado filas).\n")
+
+```
+```{r}
+# Forzar que se muestre en consola
+iqr_outlier_summary
+
+# Mostrar ordenado por % outliers (top 8)
+iqr_outlier_summary[order(-iqr_outlier_summary$pct_out),
+                    c("variable","n_out","pct_out","low","high")]
+
+```
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 8 — GRÁFICOS UNIVARIANTES (HIST + BOXPLOT) VARIABLES CLAVE
+# Estilo Lídia: gráficos simples para diagnosticar sesgo y outliers
+# ═════════════════════════════════════════════════════════════════════
+
+par(mfrow = c(2,2))
+
+hist(df$price, breaks = 30, main = "price", xlab = "price")
+boxplot(df$price, horizontal = TRUE)
+
+hist(df$livingArea, breaks = 30, main = "livingArea", xlab = "livingArea")
+boxplot(df$livingArea, horizontal = TRUE)
+
+hist(df$bathrooms, breaks = 20, main = "bathrooms", xlab = "bathrooms")
+boxplot(df$bathrooms, horizontal = TRUE)
+
+hist(df$bedrooms, breaks = 20, main = "bedrooms", xlab = "bedrooms")
+boxplot(df$bedrooms, horizontal = TRUE)
+
+par(mfrow = c(1,1))
+
+cat("\nCelda 8 ejecutada correctamente. Diagnóstico gráfico completado.\n")
+
+```
+
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 9 — RELACIÓN livingArea vs buildingArea (colinealidad)
+# Estilo Lídia: scatter + correlación + decisión
+# ═════════════════════════════════════════════════════════════════════
+
+# Scatterplot
+plot(df$livingArea, df$buildingArea,
+     pch=16, cex=0.4, col="darkblue",
+     xlab="livingArea", ylab="buildingArea",
+     main="livingArea vs buildingArea")
+grid()
+
+# Correlación (Pearson) usando solo completos
+cc <- complete.cases(df$livingArea, df$buildingArea)
+cat("N completos:", sum(cc), "\n")
+cat("Correlación Pearson:", cor(df$livingArea[cc], df$buildingArea[cc]), "\n")
+
+```
+```{r}
+# ═════════════════════════════════════════════════════════════════════
+# CELDA 10 — ELIMINACIÓN DE VARIABLE REDUNDANTE
+# Estilo Lídia: decisión explícita tras análisis de colinealidad
+# ═════════════════════════════════════════════════════════════════════
+
+# Eliminamos buildingArea por colinealidad perfecta con livingArea
+df$buildingArea <- NULL
+
+# Comprobación
+cat("Variables numéricas restantes:\n")
+print(names(df)[sapply(df, is.numeric)])
+
+cat("\nDimensiones finales del dataset:\n")
+print(dim(df))
+
+```
+
